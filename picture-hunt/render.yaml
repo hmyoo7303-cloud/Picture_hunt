@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: photo-bingo
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # Rooms are cached in one process, so keep ONE worker (threads are fine).
+    startCommand: gunicorn app:app --workers 1 --threads 8 --timeout 120 --bind 0.0.0.0:$PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      # Fill these in on the Render dashboard (Environment tab). Never commit the key.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: SUPABASE_BUCKET
+        value: bingo
+      # Password for the Pictures page (/setup). Players never need it.
+      - key: ADMIN_PASSWORD
+        sync: false

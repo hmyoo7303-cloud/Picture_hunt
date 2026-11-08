@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Picture Hunt</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="lobby">
+<main class="card">
+  <h1>Picture <span>Hunt</span></h1>
+  <p class="sub">Find the place in each picture and take a selfie there to claim the square. Claimed squares are locked for other teams. Five in a row wins. Otherwise, most squares wins.</p>
+
+  <section>
+    <h2>Create a game</h2>
+    <div id="teams">
+      <input class="team-input" value="Red Team" maxlength="20">
+      <input class="team-input" value="Blue Team" maxlength="20">
+    </div>
+    <div class="row">
+      <button type="button" id="add" class="ghost">+ Team</button>
+      <button type="button" id="remove" class="ghost">− Team</button>
+      <button type="button" id="create">Create board</button>
+    </div>
+    <p class="hint" id="lib-info">Loading picture library…</p>
+    <a class="manage" href="/setup">📷 Manage pictures →</a>
+  </section>
+
+  <section>
+    <h2>Join a game</h2>
+    <div class="row">
+      <input id="code" placeholder="Room code" maxlength="4" style="text-transform:uppercase">
+      <button type="button" id="join">Join</button>
+    </div>
+  </section>
+  <p id="err" class="warn"></p>
+</main>
+
+<script>
+const teams = document.getElementById('teams');
+const err = document.getElementById('err');
+const defaults = ['Red Team', 'Blue Team', 'Green Team', 'Purple Team'];
+
+document.getElementById('add').onclick = () => {
+  const n = teams.children.length;
+  if (n >= 4) return;
+  const i = document.createElement('input');
+  i.className = 'team-input'; i.maxLength = 20; i.value = defaults[n];
+  teams.appendChild(i);
+};
+document.getElementById('remove').onclick = () => {
+  if (teams.children.length > 2) teams.lastElementChild.remove();
+};
+document.getElementById('create').onclick = async () => {
+  const names = [...document.querySelectorAll('.team-input')].map(i => i.value.trim()).filter(Boolean);
+  const res = await fetch('/api/rooms', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({teams: names})
+  });
+  const data = await res.json();
+  if (!res.ok) { err.textContent = data.error; return; }
+  localStorage.setItem('host_' + data.code, data.host_token);
+  location.href = '/room/' + data.code;
+};
+fetch('/api/library/summary').then(r => r.json()).then(d => {
+  const info = document.getElementById('lib-info');
+  info.textContent = `Each board mixes 25 pictures at random from the library (${d.total} pictures).`;
+  if (d.total < d.needed) {
+    info.innerHTML = '';
+    info.append(`The library has ${d.total} pictures. Add at least ${d.needed - d.total} more on the `);
+    const a = document.createElement('a'); a.href = '/setup'; a.textContent = 'Pictures page';
+    info.append(a, '.');
+    info.classList.add('warn');
+  }
+});
+document.getElementById('join').onclick = () => {
+  const c = document.getElementById('code').value.trim().toUpperCase();
+  if (c) location.href = '/room/' + c;
+};
+</script>
+</body>
+</html>

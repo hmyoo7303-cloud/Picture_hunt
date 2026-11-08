@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Picture Hunt · {{ code }}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <a href="/" class="logo">Picture <span>Hunt</span></a>
+  <nav class="tabs">
+    <button type="button" class="tab active" data-tab="board">Board</button>
+    <button type="button" class="tab" data-tab="history">History</button>
+  </nav>
+  <div class="room">Room <b>{{ code }}</b> <button type="button" id="copy" class="ghost small">Copy link</button></div>
+</header>
+
+<div id="banner" class="banner hidden"></div>
+
+<!-- BOARD -->
+<section id="tab-board" class="layout">
+  <div class="board-wrap">
+    <div id="board-area">
+      <div class="letters"><span>B</span><span>I</span><span>N</span><span>G</span><span>O</span></div>
+      <div id="board" class="board"></div>
+    </div>
+  </div>
+
+  <aside>
+    <div class="panel">
+      <h3>Your team</h3>
+      <div id="team-picker" class="team-picker"></div>
+    </div>
+    <div class="panel">
+      <h3>Score</h3>
+      <div id="scores"></div>
+      <p id="note" class="hint"></p>
+    </div>
+    <div class="panel host-only hidden">
+      <h3>Host</h3>
+      <div class="host-btns">
+        <button type="button" id="btn-start">START (new random board)</button>
+        <button type="button" id="btn-refresh" class="ghost">REFRESH (clear claims)</button>
+        <button type="button" id="btn-end" class="ghost">End game (most tiles)</button>
+      </div>
+    </div>
+    <div class="panel">
+      <label class="toggle"><input type="checkbox" id="show-diff"> Show difficulty</label>
+    </div>
+  </aside>
+</section>
+
+<!-- HISTORY -->
+<section id="tab-history" class="page hidden">
+  <h2>Play history</h2>
+  <div id="history" class="history"></div>
+</section>
+
+<!-- CELL MODAL -->
+<div id="modal" class="modal hidden">
+  <div class="modal-card">
+    <button type="button" class="close" id="modal-close" aria-label="Close">✕</button>
+    <h3 id="m-title"></h3>
+    <div class="m-photos">
+      <figure><img id="m-loc" alt=""><figcaption>Find this place</figcaption></figure>
+      <figure id="m-selfie-fig" class="hidden"><img id="m-selfie" alt=""><figcaption id="m-selfie-cap"></figcaption></figure>
+    </div>
+    <form id="m-claim" class="hidden">
+      <label class="file-btn">
+        📸 Take a selfie here
+        <input type="file" id="m-file" accept="image/*" capture="user">
+      </label>
+      <img id="m-preview" class="preview hidden" alt="">
+      <button type="submit" id="m-submit" disabled>Upload &amp; claim</button>
+    </form>
+    <button type="button" id="m-undo" class="ghost hidden">Undo this claim</button>
+    <p id="m-msg" class="hint"></p>
+  </div>
+</div>
+<div id="toast" class="toast"></div>
+
+<script>
+const CODE = "{{ code }}";
+const hostToken = localStorage.getItem('host_' + CODE);
+let myTeam = localStorage.getItem('team_' + CODE);
+myTeam = myTeam === null ? null : Number(myTeam);
+let state = null;
+let openCell = null;
+
+const $ = id => document.getElementById(id);
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+};
+const fmtTime = t => new Date(t * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+async function call(method, path, body) {
+  const opts = {method, headers: {}};
+  if (hostToken) opts.headers['X-Host-Token'] = hostToken;
+  if (body instanceof FormData) opts.body = body;
+  else if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const res = await fetch(path, opts);
+  let data = {};
+  try { data = await res.json(); } catch (_) { data = {error: 'Server error (' + res.status + ')'}; }
+  if (!res.ok) { toast(data.error || 'Error'); return null; }
+  state = data; render();
+  return data;
+}
+
+// ------------------------------------------------ tabs
+document.querySelectorAll('.tab').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x === b));
+  ['board', 'history'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== b.dataset.tab));
+});
+if (hostToken) document.querySelectorAll('.host-only').forEach(e => e.classList.remove('hidden'));
+
+// ------------------------------------------------ render
+function render() {
+  renderBoard();
+  renderSide();
+  renderBanner();
+  renderHistory();
+  if (openCell !== null) fillModal();
+}
+
+function renderBoard() {
+
+  const board = $('board');
+  const key = state.board.map(t => t.src).join('|');
+  if (board.dataset.key !== key) {
+    board.innerHTML = '';
+    state.board.forEach((tile, i) => {
+      const cell = el('button', 'cell');
+      cell.type = 'button';
+      const img = el('img'); img.alt = 'Square ' + tile.square; img.src = tile.src;
+      cell.append(img, el('span', 'label'), el('span', 'diff'), el('img', 'selfie-thumb'), el('span', 'mark'));
+      cell.onclick = () => openModal(i);
+      board.appendChild(cell);
+    });
+    board.dataset.key = key;
+  }
+  [...board.children].forEach((cell, i) => {
+    const tile = state.board[i];
+    const owner = state.claims[i];
+    cell.querySelector('.label').textContent = owner === null ? '' : tile.label;
+    const d = cell.querySelector('.diff'); d.textContent = tile.difficulty; d.className = 'diff ' + tile.difficulty;
+    const thumb = cell.querySelector('.selfie-thumb');
+    const mark = cell.querySelector('.mark');
+    if (owner === null) {
+      cell.classList.remove('claimed'); cell.style.removeProperty('--team');
+      thumb.removeAttribute('src'); thumb.classList.add('hidden'); mark.textContent = '';
+    } else {
+      const team = state.teams[owner];
+      cell.classList.add('claimed'); cell.style.setProperty('--team', team.color);
+      if (thumb.getAttribute('src') !== tile.selfie) thumb.src = tile.selfie;
+      thumb.classList.remove('hidden'); mark.textContent = team.name;
+    }
+    cell.classList.toggle('mine', owner !== null && owner === myTeam);
+    cell.classList.toggle('win', state.winning_line.includes(i));
+  });
+}
+
+function renderSide() {
+  const picker = $('team-picker'); picker.innerHTML = '';
+  state.teams.forEach((t, i) => {
+    const b = el('button', 'team-btn' + (i === myTeam ? ' active' : ''), t.name);
+    b.type = 'button'; b.style.setProperty('--team', t.color);
+    b.onclick = () => { myTeam = i; localStorage.setItem('team_' + CODE, i); render(); };
+    picker.appendChild(b);
+  });
+  const max = Math.max(...state.scores);
+  const scores = $('scores'); scores.innerHTML = '';
+  state.teams.forEach((t, i) => {
+    const row = el('div', 'score' + (state.scores[i] === max && max > 0 ? ' leading' : ''));
+    row.style.setProperty('--team', t.color);
+    row.style.setProperty('--pct', (state.scores[i] / 25 * 100) + '%');
+    row.append(el('span', '', t.name), el('b', '', state.scores[i]));
+    scores.appendChild(row);
+  });
+  $('note').textContent = state.note || '';
+}
+
+function renderBanner() {
+  const banner = $('banner');
+  if (state.status !== 'finished') { banner.classList.add('hidden'); return; }
+  banner.classList.remove('hidden');
+  if (state.winner === null) {
+    banner.style.removeProperty('--team'); banner.textContent = state.reason;
+  } else {
+    banner.style.setProperty('--team', state.teams[state.winner].color);
+    banner.textContent = `🏆 ${state.teams[state.winner].name} wins! ${state.reason}`;
+  }
+}
+
+function renderHistory() {
+  const box = $('history');
+  const key = state.history.length + ':' + (state.history.at(-1) || {}).id;
+  if (box.dataset.key === key) return;
+  box.dataset.key = key; box.innerHTML = '';
+  if (!state.history.length) { box.appendChild(el('p', 'hint', 'Nothing yet.')); return; }
+  state.history.slice().reverse().forEach(h => {
+    const team = h.team !== undefined && h.team !== null ? state.teams[h.team] : null;
+    const row = el('div', 'h-row h-' + h.kind);
+    if (team) row.style.setProperty('--team', team.color);
+    if (h.kind === 'claim') {
+      const img = el('img'); img.src = h.selfie; img.alt = 'selfie'; img.loading = 'lazy';
+      img.onclick = () => window.open(h.selfie, '_blank');
+      row.appendChild(img);
+    }
+    const body = el('div', 'h-body');
+    let text;
+    if (h.kind === 'claim') text = `${team.name} claimed “${h.label}”`;
+    else if (h.kind === 'unclaim') text = `“${h.label}” un-claimed from ${team.name} (${h.text})`;
+    else if (h.kind === 'end') text = team ? `🏆 ${team.name}: ${h.text}` : `Game over: ${h.text}`;
+    else text = h.text;
+    body.append(el('b', '', text), el('span', 'hint', fmtTime(h.t)));
+    row.appendChild(body);
+    box.appendChild(row);
+  });
+}
+
+// ------------------------------------------------ modal
+function openModal(i) {
+  openCell = i;
+  $('m-file').value = ''; $('m-preview').classList.add('hidden'); $('m-submit').disabled = true; $('m-msg').textContent = '';
+  $('modal').classList.remove('hidden');
+  fillModal();
+}
+function closeModal() { openCell = null; $('modal').classList.add('hidden'); }
+$('modal-close').onclick = closeModal;
+$('modal').onclick = e => { if (e.target.id === 'modal') closeModal(); };
+
+function fillModal() {
+  const i = openCell, tile = state.board[i];
+  if (!tile) { closeModal(); return; }
+  const owner = state.claims[i];
+  const claimed = owner !== null;
+  $('m-title').textContent = claimed && tile.label ? tile.label : 'Square ' + tile.square;
+  if ($('m-loc').getAttribute('src') !== tile.src) $('m-loc').src = tile.src;
+  $('m-selfie-fig').classList.toggle('hidden', !claimed);
+  if (claimed) {
+    const team = state.teams[owner];
+    if ($('m-selfie').getAttribute('src') !== tile.selfie) $('m-selfie').src = tile.selfie;
+    $('m-selfie-cap').textContent = `${team.name} · ${fmtTime(tile.claimed_at)}`;
+    $('m-selfie-fig').style.setProperty('--team', team.color);
+  }
+  const canClaim = !claimed && state.status === 'playing';
+  $('m-claim').classList.toggle('hidden', !canClaim);
+  $('m-undo').classList.toggle('hidden', !(claimed && (hostToken || (owner === myTeam && state.status === 'playing'))));
+  if (!canClaim && !claimed) $('m-msg').textContent = 'The game is not running.';
+  else if (claimed && owner !== myTeam) $('m-msg').textContent = `Locked by ${state.teams[owner].name}.`;
+  else if (canClaim && myTeam === null) $('m-msg').textContent = 'Pick your team first (right panel).';
+  else $('m-msg').textContent = '';
+}
+
+$('m-file').onchange = () => {
+  const f = $('m-file').files[0];
+  if (!f) return;
+  $('m-preview').src = URL.createObjectURL(f);
+  $('m-preview').classList.remove('hidden');
+  $('m-submit').disabled = false;
+};
+$('m-claim').onsubmit = async e => {
+  e.preventDefault();
+  if (myTeam === null) { toast('Pick your team first'); return; }
+  const f = $('m-file').files[0];
+  if (!f) return;
+  const fd = new FormData();
+  fd.append('team', myTeam); fd.append('selfie', f);
+  $('m-submit').disabled = true; $('m-msg').textContent = 'Uploading…';
+  const ok = await call('POST', `/api/rooms/${CODE}/cells/${openCell}/claim`, fd);
+  if (ok) { toast('Square claimed!'); closeModal(); }
+  else { $('m-submit').disabled = false; $('m-msg').textContent = ''; }
+};
+$('m-undo').onclick = async () => {
+  if (!confirm('Remove this claim?')) return;
+  const ok = await call('POST', `/api/rooms/${CODE}/cells/${openCell}/clear`, {team: myTeam});
+  if (ok) closeModal();
+};
+
+// ------------------------------------------------ host controls
+$('btn-start').onclick = () => {
+  if (!confirm('Mix a new random board from the picture library? All claims will be cleared.')) return;
+  call('POST', `/api/rooms/${CODE}/start`);
+};
+$('btn-refresh').onclick = () => confirm('Clear every claim on this board?') && call('POST', `/api/rooms/${CODE}/refresh`);
+$('btn-end').onclick = () => confirm('End the game now? Most tiles wins.') && call('POST', `/api/rooms/${CODE}/end`);
+
+$('show-diff').onchange = e => document.body.classList.toggle('show-diff', e.target.checked);
+$('copy').onclick = () => navigator.clipboard.writeText(location.href).then(() => toast('Link copied'));
+
+// ------------------------------------------------ polling
+async function poll() {
+  try {
+    const res = await fetch(`/api/rooms/${CODE}?v=${state ? state.version : ''}`,
+      hostToken ? {headers: {'X-Host-Token': hostToken}} : {});
+    const data = await res.json();
+    if (!res.ok) { toast(data.error); return; }
+    if (!data.unchanged) { state = data; render(); }
+  } catch (_) {}
+}
+poll();
+setInterval(poll, 2000);
+</script>
+</body>
+</html>

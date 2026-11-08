@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Picture Hunt · Pictures</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <a href="/" class="back">← Picture <span>Hunt</span></a>
+  <span class="room" id="lib-total"></span>
+</header>
+
+<section class="page">
+  <div id="login" class="panel login hidden">
+    <h3>Admin password</h3>
+    <form id="login-form" class="row">
+      <input type="password" id="pw" placeholder="Password" autocomplete="current-password" required>
+      <button type="submit">Open</button>
+    </form>
+    <p id="login-err" class="hint warn"></p>
+  </div>
+
+  <div id="manager" class="hidden">
+    <h2>Picture library</h2>
+    <p class="hint">Upload every place once. Each new board picks 25 of these at random and balances difficulty.
+      Names are optional. Players only see a name after a team claims that square.</p>
+    <form id="upload-form" class="upload panel">
+      <input type="file" id="files" accept="image/*" multiple required>
+      <select id="diff">
+        <option value="easy">Easy</option>
+        <option value="medium" selected>Medium</option>
+        <option value="hard">Hard</option>
+      </select>
+      <button type="submit">Upload</button>
+      <span id="status" class="hint"></span>
+    </form>
+    <div class="filters">
+      <p id="count" class="hint"></p>
+      <div class="chips" id="chips">
+        <button type="button" class="chip active" data-f="all">All</button>
+        <button type="button" class="chip" data-f="easy">Easy</button>
+        <button type="button" class="chip" data-f="medium">Medium</button>
+        <button type="button" class="chip" data-f="hard">Hard</button>
+      </div>
+    </div>
+    <div id="grid" class="loc-grid"></div>
+  </div>
+</section>
+<div id="toast" class="toast"></div>
+
+<script>
+const NEEDS_PW = {{ 'true' if needs_password else 'false' }};
+let pw = localStorage.getItem('ph_admin') || '';
+let lib = null;
+let filter = 'all';
+const $ = id => document.getElementById(id);
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+};
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+async function call(method, path, body) {
+  const opts = {method, headers: {'X-Admin-Password': pw}};
+  if (body instanceof FormData) opts.body = body;
+  else if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const res = await fetch(path, opts);
+  let data = {};
+  try { data = await res.json(); } catch (_) { data = {error: 'Server error (' + res.status + ')'}; }
+  if (res.status === 403) { showLogin(data.error); return null; }
+  if (!res.ok) { toast(data.error || 'Error'); return null; }
+  lib = data; render();
+  return data;
+}
+
+function showLogin(msg) {
+  $('manager').classList.add('hidden');
+  $('login').classList.remove('hidden');
+  $('login-err').textContent = msg && pw ? msg : '';
+}
+$('login-form').onsubmit = async e => {
+  e.preventDefault();
+  pw = $('pw').value;
+  if (await call('GET', '/api/library')) {
+    localStorage.setItem('ph_admin', pw);
+    $('login').classList.add('hidden');
+  }
+};
+
+function render() {
+  $('manager').classList.remove('hidden');
+  const c = lib.counts, total = lib.locations.length;
+  $('lib-total').innerHTML = '';
+  $('lib-total').append(el('b', '', total), ' pictures');
+  $('count').textContent = `Easy ${c.easy} · Medium ${c.medium} · Hard ${c.hard}` +
+    (total < lib.needed ? ` · add ${lib.needed - total} more to play` : ' · ready to play');
+
+  const grid = $('grid');
+  grid.innerHTML = '';
+  lib.locations.filter(l => filter === 'all' || l.difficulty === filter).slice().reverse().forEach(l => {
+    const card = el('div', 'loc');
+    const img = el('img'); img.src = l.src; img.alt = l.label || 'location'; img.loading = 'lazy';
+    const name = el('input'); name.value = l.label; name.maxLength = 40; name.placeholder = 'Name (optional)';
+    name.onchange = () => call('PATCH', `/api/library/${l.id}`, {label: name.value});
+    const sel = el('select', 'diff-select ' + l.difficulty);
+    ['easy', 'medium', 'hard'].forEach(d => {
+      const o = el('option', '', d); o.value = d; o.selected = d === l.difficulty; sel.appendChild(o);
+    });
+    sel.onchange = () => call('PATCH', `/api/library/${l.id}`, {difficulty: sel.value});
+    const del = el('button', 'ghost small', 'Delete'); del.type = 'button';
+    del.onclick = () => confirm('Delete this picture from the library?') && call('DELETE', `/api/library/${l.id}`);
+    const row = el('div', 'loc-row'); row.append(sel, del);
+    card.append(img, name, row);
+    grid.appendChild(card);
+  });
+}
+
+document.querySelectorAll('.chip').forEach(b => b.onclick = () => {
+  filter = b.dataset.f;
+  document.querySelectorAll('.chip').forEach(x => x.classList.toggle('active', x === b));
+  render();
+});
+
+$('upload-form').onsubmit = async e => {
+  e.preventDefault();
+  const files = [...$('files').files];
+  if (!files.length) return;
+  for (let i = 0; i < files.length; i += 5) {  // small batches keep each request light
+    $('status').textContent = `Uploading ${Math.min(i + 5, files.length)} / ${files.length}…`;
+    const fd = new FormData();
+    fd.append('difficulty', $('diff').value);
+    files.slice(i, i + 5).forEach(f => fd.append('photos', f));
+    if (!await call('POST', '/api/library', fd)) break;
+  }
+  $('status').textContent = 'Done';
+  $('files').value = '';
+};
+
+if (NEEDS_PW && !pw) showLogin();
+else call('GET', '/api/library');
+</script>
+</body>
+</html>
